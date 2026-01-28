@@ -22,9 +22,9 @@ Fetching all Steam Play release data from GitHub...
 ```
 
 ## Supported Steam Play Compatibility Tools
-+ Proton GE
-+ Proton EM
-+ Luxtorpeda
-+ Boxtron
-+ Roberta
++ [Proton GE](https://github.com/GloriousEggroll/proton-ge-custom)
++ [Proton EM](https://github.com/Etaash-mathamsetty/Proton)
++ [Luxtorpeda](https://github.com/luxtorpeda-dev/luxtorpeda)
++ [Boxtron](https://github.com/dreamer/boxtron)
++ [Roberta](https://github.com/dreamer/roberta)
 
