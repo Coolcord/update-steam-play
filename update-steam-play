@@ -1,0 +1,356 @@
+#!/bin/bash
+set -e
+
+MANAGE_BOXTRON=false
+MANAGE_ROBERTA=false
+
+INSTALL_BASE="$HOME/.steam/steam/compatibilitytools.d"
+LATEST_DIR="$INSTALL_BASE/GE-Proton-Latest"
+TEMP_DIR="$(mktemp -d)"
+
+echo "Fetching all Steam Play release data from GitHub..."
+RELEASE_DATA=$(curl -s "https://api.github.com/repos/GloriousEggroll/proton-ge-custom/releases?per_page=1000")
+
+# Extract all .tar.gz URLs from the release JSON
+TAR_URLS=($(echo "$RELEASE_DATA" | grep browser_download_url | grep ".tar.gz" | cut -d '"' -f 4))
+
+declare -A LATEST_BY_MAJOR
+LATEST_OVERALL_URL=""
+LATEST_OVERALL_VERSION=""
+
+# Parse version and track latest per major version
+for url in "${TAR_URLS[@]}"; do
+    filename=$(basename "$url")
+
+    if [[ "$filename" =~ GE-Proton([0-9]+)-([0-9]+)\.tar\.gz ]]; then
+        major="${BASH_REMATCH[1]}"
+        patch="${BASH_REMATCH[2]}"
+
+        # Skip major versions < 10
+        if (( major < 10 )); then
+            continue
+        fi
+
+        version="${major}-${patch}"
+
+        existing_version="${LATEST_BY_MAJOR[$major]%%|*}"
+        if [[ -z "$existing_version" || "$(echo -e "$existing_version\n$version" | sort -V | tail -n1)" == "$version" ]]; then
+            LATEST_BY_MAJOR["$major"]="$version|$url"
+        fi
+
+        if [[ -z "$LATEST_OVERALL_VERSION" || "$(echo -e "$LATEST_OVERALL_VERSION\n$version" | sort -V | tail -n1)" == "$version" ]]; then
+            LATEST_OVERALL_VERSION="$version"
+            LATEST_OVERALL_URL="$url"
+        fi
+    fi
+done
+
+declare -A VERSION_EXCEPTIONS=(
+    ["1707701731 GE-Proton8-31-4-gdfe728b4"]="8-32"
+)
+
+is_version_installed() {
+    local dir="$1"
+    local expected="$2"
+    local version_file="$dir/version"
+    local version_py_file="$dir/version.py"
+    local version_txt_file="$dir/version.txt"
+
+    # ✅ Proton GE: prefer version.txt if present
+    local folder_name
+    folder_name=$(basename "$dir")
+    if [[ "$folder_name" == GE-Proton* && -f "$version_txt_file" ]]; then
+        local stored_version
+        stored_version=$(<"$version_txt_file")
+        if [[ "$stored_version" == "$expected" ]]; then
+            return 0
+        else
+            return 1
+        fi
+    fi
+
+    if [[ -f "$version_py_file" ]]; then
+        local raw_version
+        raw_version=$(grep -E "^VERSION\s*=" "$version_py_file" | sed -E "s/^VERSION\s*=\s*['\"]([^'\"]+)['\"].*/\1/")
+
+        # Normalize: strip leading 'v' if any
+        local norm_raw_version="${raw_version#v}"
+        local norm_expected="${expected#v}"
+
+        if [[ "$norm_raw_version" == "$norm_expected" ]]; then
+            return 0
+        else
+            return 1
+        fi
+    fi
+
+    # Fallback to regular version file logic
+    if [[ -f "$version_file" ]]; then
+        local raw_version
+        raw_version=$(<"$version_file")
+
+        # Check exceptions first
+        if [[ -n "${VERSION_EXCEPTIONS[$raw_version]}" ]]; then
+            raw_version="${VERSION_EXCEPTIONS[$raw_version]}"
+        else
+            # Strip timestamp if present
+            raw_version=$(echo "$raw_version" | sed -E 's/^[0-9]+[[:space:]]+//')
+
+            # Normalize version string
+            if [[ "$raw_version" =~ ^GE-Proton([0-9]+)-([0-9]+)-([0-9]+) ]]; then
+                raw_version="${BASH_REMATCH[1]}-${BASH_REMATCH[2]}-${BASH_REMATCH[3]}"
+            elif [[ "$raw_version" =~ ^GE-Proton([0-9]+)-([0-9]+)$ ]]; then
+                raw_version="${BASH_REMATCH[1]}-${BASH_REMATCH[2]}"
+            elif [[ "$raw_version" =~ ^([0-9]+\.[0-9]+-GE-[0-9]+-ST) ]]; then
+                raw_version="${BASH_REMATCH[1]}"
+            elif [[ "$raw_version" =~ ^([0-9]+\.[0-9]+-GE-[0-9]+) ]]; then
+                raw_version="${BASH_REMATCH[1]}"
+            elif [[ "$raw_version" =~ ^(v[0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+                raw_version="${BASH_REMATCH[1]}"
+            else
+                echo "⚠️  Unknown version format in $version_file: '$raw_version'"
+                return 1
+            fi
+        fi
+
+        [[ "$raw_version" == "$expected" ]]
+    else
+        return 1
+    fi
+}
+
+download_and_install () {
+    local url="$1"
+    local target_dir="$2"
+    local version="$3"
+
+    if is_version_installed "$target_dir" "$version"; then
+        foldername=$(basename "$target_dir")
+        if [[ "$foldername" == *-Latest ]]; then
+            echo "✔️  $foldername is already up to date (version $version)."
+        else
+            echo "✔️  $foldername is already up to date."
+        fi
+        return
+    fi
+
+    echo "⬇️  Installing $version to $target_dir"
+
+    # Download into TEMP_DIR (use full path)
+    cd "$TEMP_DIR"
+    filename=$(basename "$url")
+    curl -L -o "$TEMP_DIR/$filename" "$url"
+
+    # Create a staging extraction dir (isolated)
+    stage_dir=$(mktemp -d "$TEMP_DIR/stage.XXXX")
+    tar -xf "$TEMP_DIR/$filename" -C "$stage_dir"
+
+    # Find extracted top-level entry; if single dir, use it, otherwise treat stage_dir as src
+    extracted=$(find "$stage_dir" -mindepth 1 -maxdepth 1 -type d | head -n 1)
+    if [[ -n "$extracted" && -d "$extracted" ]]; then
+        src="$extracted"
+    else
+        src="$stage_dir"
+    fi
+
+    # Prepare a new temporary target dir under the same parent so later mv is atomic
+    parent_dir=$(dirname "$target_dir")
+    new_target=$(mktemp -d "$parent_dir/.tmp.$(basename "$target_dir").XXXX") || new_target="$parent_dir/.tmp.$(basename "$target_dir").$RANDOM"
+
+    # Copy everything into new_target robustly (includes dotfiles). Use cp -a to preserve symlinks/attrs.
+    cp -a "$src/." "$new_target/" || {
+        echo "❌ Failed to copy extracted files into staging area."
+        rm -rf "$stage_dir" "$new_target" "$TEMP_DIR/$filename"
+        return 1
+    }
+
+    # Sanity check: ensure we actually copied something that looks like a compatibility tool
+    if [[ ! -f "$new_target/compatibilitytool.vdf" && ! -d "$new_target/files" ]]; then
+        echo "❌ Extracted content doesn't look like a valid compatibility tool (no compatibilitytool.vdf or files/). Aborting."
+        rm -rf "$stage_dir" "$new_target" "$TEMP_DIR/$filename"
+        return 1
+    fi
+
+    # 🔧 Patch compatibilitytool.vdf inside the staged new_target (use final folder name)
+    folder_name=$(basename "$target_dir")
+    vdf="$new_target/compatibilitytool.vdf"
+    if [[ -f "$vdf" ]]; then
+        if grep -qE '^[[:space:]]*"[^\"]+"[[:space:]]*// Internal name of this tool' "$vdf"; then
+            sed -i -E "0,/^[[:space:]]*\"[^\"]+\"[[:space:]]*\/\/ Internal name of this tool/s//\"$folder_name\" \/\/ Internal name of this tool/" "$vdf"
+        else
+            echo "⚠️  Could not find internal name line to patch in $vdf"
+        fi
+
+        if grep -qE '"display_name"[[:space:]]+"[^"]+"' "$vdf"; then
+            sed -i -E "s/(\"display_name\"[[:space:]]+\")[^\"]+\"/\1$folder_name\"/" "$vdf"
+        else
+            echo "⚠️  Could not find display_name line to patch in $vdf"
+        fi
+    else
+        echo "⚠️  No compatibilitytool.vdf found in staged content; skipping patch."
+    fi
+
+    # ✅ Write version.txt only for Proton GE (inside staged dir)
+    if [[ "$folder_name" == GE-Proton* ]]; then
+        echo "$version" > "$new_target/version.txt"
+    fi
+
+    # Atomically replace: remove old target and move new into place
+    rm -rf "$target_dir"
+    mv "$new_target" "$target_dir" || {
+        echo "❌ Failed to move completed install into place."
+        rm -rf "$new_target" "$stage_dir" "$TEMP_DIR/$filename"
+        return 1
+    }
+
+    # Cleanup staging and downloaded archive
+    rm -rf "$stage_dir" "$TEMP_DIR/$filename"
+
+    echo "✅ Installed $folder_name (version $version)"
+}
+
+# Install overall latest GE-Proton
+download_and_install "$LATEST_OVERALL_URL" "$LATEST_DIR" "$LATEST_OVERALL_VERSION"
+
+# Install latest of each major GE-Proton version
+for major in "${!LATEST_BY_MAJOR[@]}"; do
+    entry="${LATEST_BY_MAJOR[$major]}"
+    version="${entry%%|*}"
+    url="${entry##*|}"
+    target_dir="$INSTALL_BASE/GE-Proton$version"
+
+    if [[ "$version" == "$LATEST_OVERALL_VERSION" ]]; then
+        continue
+    fi
+
+    download_and_install "$url" "$target_dir" "$version"
+done
+
+# === LEGACY VERSIONS 7 AND LATER ===
+
+# Format is VERSION|URL
+V7_LEGACY_LIST=(
+    "9-27|https://github.com/GloriousEggroll/proton-ge-custom/releases/download/GE-Proton9-27/GE-Proton9-27.tar.gz"
+    "8-32|https://github.com/GloriousEggroll/proton-ge-custom/releases/download/GE-Proton8-32/GE-Proton8-32.tar.gz"
+    "7-55|https://github.com/GloriousEggroll/proton-ge-custom/releases/download/GE-Proton7-55/GE-Proton7-55.tar.gz"
+)
+
+for item in "${V7_LEGACY_LIST[@]}"; do
+    IFS="|" read -r version_tag url <<< "$item"
+    target_dir="$INSTALL_BASE/GE-Proton$version_tag"
+    download_and_install "$url" "$target_dir" "$version_tag"
+done
+
+# === LEGACY VERSIONS 6 AND LOWER ===
+
+# Format is VERSION|URL
+V4_LEGACY_LIST=(
+    "6.21-GE-2|https://github.com/GloriousEggroll/proton-ge-custom/releases/download/6.21-GE-2/Proton-6.21-GE-2.tar.gz"
+    "5.9-GE-8-ST|https://github.com/GloriousEggroll/proton-ge-custom/releases/download/5.9-GE-8-ST/Proton-5.9-GE-8-ST.tar.gz"
+)
+
+# Proton 4 disabled since it causes "file not found" errors: "4.21-GE-2|https://github.com/GloriousEggroll/proton-ge-custom/releases/download/4.21-GE-2/Proton-4.21-GE-2.tar.gz"
+
+for item in "${V4_LEGACY_LIST[@]}"; do
+    IFS="|" read -r version_tag url <<< "$item"
+    major="${version_tag%%.*}"
+    patch=$(echo "$version_tag" | cut -d '.' -f2 | cut -d '-' -f1)
+    name="GE-Proton${major}-${patch}"
+    target_dir="$INSTALL_BASE/$name"
+    download_and_install "$url" "$target_dir" "$version_tag"
+done
+
+# === LUXTORPEDA INSTALL ===
+
+LUX_RELEASE_DATA=$(curl -s "https://api.github.com/repos/luxtorpeda-dev/luxtorpeda/releases?per_page=100")
+LUX_TAR_URLS=($(echo "$LUX_RELEASE_DATA" | grep '"browser_download_url":' | grep -E 'luxtorpeda-v[0-9]+\.[0-9]+\.[0-9]+\.tar\.xz"$' | cut -d '"' -f 4))
+
+LATEST_LUX_VERSION=""
+LATEST_LUX_URL=""
+
+for url in "${LUX_TAR_URLS[@]}"; do
+    filename=$(basename "$url")
+
+    if [[ "$filename" =~ luxtorpeda-(v[0-9]+\.[0-9]+\.[0-9]+)\.tar\.xz$ ]]; then
+        version="${BASH_REMATCH[1]}"
+
+        if [[ -z "$LATEST_LUX_VERSION" || "$(echo -e "$LATEST_LUX_VERSION\n$version" | sort -V | tail -n1)" == "$version" ]]; then
+            LATEST_LUX_VERSION="$version"
+            LATEST_LUX_URL="$url"
+        fi
+    fi
+done
+
+if [[ -z "$LATEST_LUX_URL" ]]; then
+    echo "❌ Failed to find a valid Luxtorpeda .tar.xz release URL."
+    exit 1
+fi
+
+LUX_TARGET_DIR="$INSTALL_BASE/Luxtorpeda-Latest"
+download_and_install "$LATEST_LUX_URL" "$LUX_TARGET_DIR" "$LATEST_LUX_VERSION"
+
+# === BOXTRON INSTALL ===
+if [[ "$MANAGE_BOXTRON" == true ]]; then
+    BOX_RELEASE_DATA=$(curl -s "https://api.github.com/repos/dreamer/boxtron/releases?per_page=100")
+    BOX_TAR_URLS=($(echo "$BOX_RELEASE_DATA" | grep '"browser_download_url":' | grep 'boxtron.tar.xz' | cut -d '"' -f 4))
+
+    LATEST_BOX_VERSION=""
+    LATEST_BOX_URL=""
+
+    for url in "${BOX_TAR_URLS[@]}"; do
+        # Extract version from URL path, e.g., /download/v0.5.4/boxtron.tar.xz → v0.5.4
+        if [[ "$url" =~ /download/(v[0-9]+\.[0-9]+\.[0-9]+)/boxtron\.tar\.xz$ ]]; then
+            version="${BASH_REMATCH[1]}"
+
+            if [[ -z "$LATEST_BOX_VERSION" || "$(echo -e "$LATEST_BOX_VERSION\n$version" | sort -V | tail -n1)" == "$version" ]]; then
+                LATEST_BOX_VERSION="$version"
+                LATEST_BOX_URL="$url"
+            fi
+        fi
+    done
+
+    if [[ -z "$LATEST_BOX_URL" ]]; then
+        echo "❌ Failed to find a valid Boxtron .tar.xz release URL."
+        exit 1
+    fi
+
+    BOX_TARGET_DIR="$INSTALL_BASE/Boxtron-Latest"
+    download_and_install "$LATEST_BOX_URL" "$BOX_TARGET_DIR" "$LATEST_BOX_VERSION"
+fi
+
+
+# === ROBERTA INSTALL ===
+if [[ "$MANAGE_ROBERTA" == true ]]; then
+    ROBER_RELEASE_DATA=$(curl -s "https://api.github.com/repos/dreamer/roberta/releases?per_page=100")
+    ROBER_TAR_URLS=($(echo "$ROBER_RELEASE_DATA" | grep '"browser_download_url":' | grep 'roberta.tar.xz' | cut -d '"' -f 4))
+
+    LATEST_ROBER_VERSION=""
+    LATEST_ROBER_URL=""
+
+    for url in "${ROBER_TAR_URLS[@]}"; do
+        if [[ "$url" =~ /download/(v[0-9]+\.[0-9]+\.[0-9]+)/roberta\.tar\.xz$ ]]; then
+            version="${BASH_REMATCH[1]}"
+
+            if [[ -z "$LATEST_ROBER_VERSION" || "$(echo -e "$LATEST_ROBER_VERSION\n$version" | sort -V | tail -n1)" == "$version" ]]; then
+                LATEST_ROBER_VERSION="$version"
+                LATEST_ROBER_URL="$url"
+            fi
+        fi
+    done
+
+    if [[ -z "$LATEST_ROBER_URL" ]]; then
+        echo "❌ Failed to find a valid Roberta .tar.xz release URL."
+        exit 1
+    fi
+
+    ROBER_TARGET_DIR="$INSTALL_BASE/Roberta-Latest"
+    download_and_install "$LATEST_ROBER_URL" "$ROBER_TARGET_DIR" "$LATEST_ROBER_VERSION"
+fi
+
+# Final cleanup: remove temp dir itself
+if [[ -n "$TEMP_DIR" && -d "$TEMP_DIR" && "$TEMP_DIR" == /tmp/* ]]; then
+    rm -rf "$TEMP_DIR"
+fi
+
+echo "✅ All Steam Play versions are now up to date!"
+
