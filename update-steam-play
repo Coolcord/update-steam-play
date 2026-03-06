@@ -9,8 +9,24 @@ MANAGE_BOXTRON=true
 MANAGE_ROBERTA=true
 # ==============================================
 
+# ============================================================
+# Dependency checks
+# ============================================================
+
+REQUIRED_CMDS=(rsync curl jq tar)
+
+for cmd in "${REQUIRED_CMDS[@]}"; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+        echo "❌ Required command not found: $cmd"
+        echo "Please install it and run the script again."
+        exit 1
+    fi
+done
+
 INSTALL_BASE="$HOME/.steam/steam/compatibilitytools.d"
 TEMP_DIR="$(mktemp -d)"
+
+mkdir -p "$INSTALL_BASE"
 
 echo "Fetching all Steam Play release data from GitHub..."
 
@@ -29,9 +45,6 @@ is_version_installed() {
     local version_txt="$dir/version.txt"
     local version_py="$dir/version.py"
     local version_file="$dir/version"
-
-    local folder
-    folder=$(basename "$dir")
 
     if [[ -f "$version_txt" ]]; then
         [[ "$(cat "$version_txt")" == "$expected" ]]
@@ -66,10 +79,11 @@ is_version_installed() {
 }
 
 # ============================================================
-# Install helper
+# Install helper (rsync-safe)
 # ============================================================
 
 download_and_install() {
+
     local url="$1"
     local target="$2"
     local version="$3"
@@ -77,29 +91,31 @@ download_and_install() {
     if is_version_installed "$target" "$version"; then
         local name
         name=$(basename "$target")
+
         if [[ "$name" == *-Latest ]]; then
-            echo "✔  $name is already up to date (version $version)."
+            echo "✔ $name is already up to date (version $version)."
         else
-            echo "✔  $name is already up to date."
+            echo "✔ $name is already up to date."
         fi
+
         return
     fi
 
-    echo "⬇  Installing $version to $target"
+    echo "⬇ Installing $version to $target"
 
-    local file
-    file="$TEMP_DIR/$(basename "$url")"
+    local file="$TEMP_DIR/$(basename "$url")"
     curl -L -o "$file" "$url"
 
     local stage
     stage=$(mktemp -d "$TEMP_DIR/stage.XXXX")
+
     tar -xf "$file" -C "$stage"
 
     local src
     src=$(find "$stage" -mindepth 1 -maxdepth 1 -type d | head -n1)
 
     local tmp
-    tmp=$(mktemp -d "$(dirname "$target")/.tmp.$(basename "$target").XXXX")
+    tmp=$(mktemp -d "$TEMP_DIR/tmp.XXXX")
 
     cp -a "$src/." "$tmp/"
 
@@ -107,15 +123,18 @@ download_and_install() {
     name=$(basename "$target")
 
     if [[ -f "$tmp/compatibilitytool.vdf" ]]; then
-        sed -i -E "s/(\"display_name\"[[:space:]]+\")[^\"]+\"/\1$name\"/" "$tmp/compatibilitytool.vdf"
+        sed -i -E 's/("display_name"[[:space:]]+")[^"]+"/\1'"$name"'"/' "$tmp/compatibilitytool.vdf"
     fi
 
     echo "$version" > "$tmp/version.txt"
 
-    rm -rf "$target"
-    mv "$tmp" "$target"
+    mkdir -p "$target"
 
-    rm -rf "$stage" "$file"
+    rsync -a --delete "$tmp/" "$target/"
+
+    rm -rf "$tmp"
+    rm -rf "$stage"
+    rm -f "$file"
 
     echo "✅ Installed $name (version $version)"
 }
@@ -125,35 +144,38 @@ download_and_install() {
 # ============================================================
 
 manage_proton_ge() {
+
     local releases
     releases=$(curl -s "https://api.github.com/repos/GloriousEggroll/proton-ge-custom/releases?per_page=1000")
 
     mapfile -t urls < <(echo "$releases" | grep browser_download_url | grep '\.tar\.gz"' | cut -d '"' -f4)
 
     declare -A latest_by_major
+
     local latest_version=""
     local latest_url=""
 
     for url in "${urls[@]}"; do
+
         local file
         file=$(basename "$url")
+
         if [[ "$file" =~ ^GE-Proton([0-9]+)-([0-9]+)\.tar\.gz$ ]]; then
+
             local major="${BASH_REMATCH[1]}"
             local minor="${BASH_REMATCH[2]}"
             local version="$major-$minor"
 
-	    # Skip major versions < 10
             if (( major < 10 )); then
                 continue
             fi
 
-            # per-major
             local current="${latest_by_major[$major]%%|*}"
+
             if [[ -z "$current" || "$(printf "%s\n%s\n" "$current" "$version" | sort -V | tail -n1)" == "$version" ]]; then
                 latest_by_major["$major"]="$version|$url"
             fi
 
-            # latest overall
             if [[ -z "$latest_version" || "$(printf "%s\n%s\n" "$latest_version" "$version" | sort -V | tail -n1)" == "$version" ]]; then
                 latest_version="$version"
                 latest_url="$url"
@@ -166,15 +188,19 @@ manage_proton_ge() {
     download_and_install "$latest_url" "$INSTALL_BASE/GE-Proton-Latest" "$latest_version"
 
     for major in "${!latest_by_major[@]}"; do
+
         entry="${latest_by_major[$major]}"
         version="${entry%%|*}"
         url="${entry##*|}"
+
         [[ "$version" == "$latest_version" ]] && continue
+
         download_and_install "$url" "$INSTALL_BASE/GE-Proton$version" "$version"
     done
 }
 
 manage_proton_ge_legacy() {
+
     V7_GE_LEGACY_LIST=(
         "9-27|https://github.com/GloriousEggroll/proton-ge-custom/releases/download/GE-Proton9-27/GE-Proton9-27.tar.gz"
         "8-32|https://github.com/GloriousEggroll/proton-ge-custom/releases/download/GE-Proton8-32/GE-Proton8-32.tar.gz"
@@ -193,8 +219,10 @@ manage_proton_ge_legacy() {
 
     for item in "${V4_GE_LEGACY_LIST[@]}"; do
         IFS="|" read -r v u <<< "$item"
+
         major="${v%%.*}"
         patch=$(echo "$v" | cut -d '.' -f2 | cut -d '-' -f1)
+
         download_and_install "$u" "$INSTALL_BASE/GE-Proton$major-$patch" "$v"
     done
 }
@@ -204,15 +232,19 @@ manage_proton_ge_legacy() {
 # ============================================================
 
 manage_proton_em() {
+
     declare -A latest_by_major
+
     local latest_overall=""
     local latest_url=""
 
     EM_RELEASES=$(curl -s "https://api.github.com/repos/Etaash-mathamsetty/Proton/releases?per_page=1000")
 
     while read -r release; do
+
         local tag
         tag=$(echo "$release" | jq -r '.tag_name')
+
         if [[ ! "$tag" =~ ^EM-([0-9]+)\.([0-9]+)-([0-9]+)$ ]]; then
             continue
         fi
@@ -222,34 +254,33 @@ manage_proton_em() {
         local version="${major}-${patch}"
 
         local asset_url
-        asset_url=$(echo "$release" | jq -r '.assets[]
-            | select(.name=="proton-EM-'"$version"'.tar.xz")
-            | .browser_download_url')
+        asset_url=$(echo "$release" | jq -r '.assets[] | select(.name=="proton-EM-'"$version"'.tar.xz") | .browser_download_url')
 
         [[ -z "$asset_url" ]] && continue
 
         latest_by_major["$major"]="$version|$asset_url"
 
-        # Track overall latest
         if [[ -z "$latest_overall" || "$(printf "%s\n%s\n" "$latest_overall" "$version" | sort -V | tail -n1)" == "$version" ]]; then
             latest_overall="$version"
             latest_url="$asset_url"
         fi
+
     done <<< "$(echo "$EM_RELEASES" | jq -c '.[]')"
 
-    # Install latest overall as EM-Proton-Latest
     [[ -n "$latest_overall" ]] && download_and_install "$latest_url" "$INSTALL_BASE/EM-Proton-Latest" "$latest_overall"
 
-    # Install older major versions (skip latest major)
     for major in "${!latest_by_major[@]}"; do
+
         entry="${latest_by_major[$major]}"
         version="${entry%%|*}"
         url="${entry##*|}"
-        # Skip if major version matches latest_overall
+
         if [[ "$version" == "$latest_overall" ]] || [[ "${version%%-*}" == "${latest_overall%%-*}" ]]; then
             continue
         fi
+
         download_and_install "$url" "$INSTALL_BASE/EM-Proton$major" "$version"
+
     done
 }
 
@@ -258,20 +289,27 @@ manage_proton_em() {
 # ============================================================
 
 manage_luxtorpeda() {
+
     LUX_DATA=$(curl -s "https://api.github.com/repos/luxtorpeda-dev/luxtorpeda/releases?per_page=100")
+
     mapfile -t LUX_URLS < <(echo "$LUX_DATA" | grep browser_download_url | grep '\.tar\.xz"' | cut -d '"' -f4)
 
     latest_v=""
     latest_u=""
 
     for u in "${LUX_URLS[@]}"; do
+
         f=$(basename "$u")
+
         [[ "$f" =~ luxtorpeda-(v[0-9]+\.[0-9]+\.[0-9]+)\.tar\.xz ]] || continue
+
         v="${BASH_REMATCH[1]}"
+
         if [[ -z "$latest_v" || "$(printf "%s\n%s\n" "$latest_v" "$v" | sort -V | tail -n1)" == "$v" ]]; then
             latest_v="$v"
             latest_u="$u"
         fi
+
     done
 
     download_and_install "$latest_u" "$INSTALL_BASE/Luxtorpeda-Latest" "$latest_v"
@@ -282,15 +320,18 @@ manage_luxtorpeda() {
 # ============================================================
 
 manage_boxtron() {
+
     BOX_RELEASE_DATA=$(curl -s "https://api.github.com/repos/dreamer/boxtron/releases?per_page=100")
+
     BOX_TAR_URLS=($(echo "$BOX_RELEASE_DATA" | grep '"browser_download_url":' | grep 'boxtron.tar.xz' | cut -d '"' -f 4))
 
     LATEST_BOX_VERSION=""
     LATEST_BOX_URL=""
 
     for url in "${BOX_TAR_URLS[@]}"; do
-        # Extract version from URL path, e.g., /download/v0.5.4/boxtron.tar.xz → v0.5.4
+
         if [[ "$url" =~ /download/(v[0-9]+\.[0-9]+\.[0-9]+)/boxtron\.tar\.xz$ ]]; then
+
             version="${BASH_REMATCH[1]}"
 
             if [[ -z "$LATEST_BOX_VERSION" || "$(echo -e "$LATEST_BOX_VERSION\n$version" | sort -V | tail -n1)" == "$version" ]]; then
@@ -298,15 +339,12 @@ manage_boxtron() {
                 LATEST_BOX_URL="$url"
             fi
         fi
+
     done
 
-    if [[ -z "$LATEST_BOX_URL" ]]; then
-        echo "❌ Failed to find a valid Boxtron .tar.xz release URL."
-        exit 1
-    fi
+    [[ -z "$LATEST_BOX_URL" ]] && { echo "❌ Failed to find Boxtron release"; exit 1; }
 
-    BOX_TARGET_DIR="$INSTALL_BASE/Boxtron-Latest"
-    download_and_install "$LATEST_BOX_URL" "$BOX_TARGET_DIR" "$LATEST_BOX_VERSION"
+    download_and_install "$LATEST_BOX_URL" "$INSTALL_BASE/Boxtron-Latest" "$LATEST_BOX_VERSION"
 }
 
 # ============================================================
@@ -314,14 +352,18 @@ manage_boxtron() {
 # ============================================================
 
 manage_roberta() {
+
     ROBER_RELEASE_DATA=$(curl -s "https://api.github.com/repos/dreamer/roberta/releases?per_page=100")
+
     ROBER_TAR_URLS=($(echo "$ROBER_RELEASE_DATA" | grep '"browser_download_url":' | grep 'roberta.tar.xz' | cut -d '"' -f 4))
 
     LATEST_ROBER_VERSION=""
     LATEST_ROBER_URL=""
 
     for url in "${ROBER_TAR_URLS[@]}"; do
+
         if [[ "$url" =~ /download/(v[0-9]+\.[0-9]+\.[0-9]+)/roberta\.tar\.xz$ ]]; then
+
             version="${BASH_REMATCH[1]}"
 
             if [[ -z "$LATEST_ROBER_VERSION" || "$(echo -e "$LATEST_ROBER_VERSION\n$version" | sort -V | tail -n1)" == "$version" ]]; then
@@ -329,15 +371,12 @@ manage_roberta() {
                 LATEST_ROBER_URL="$url"
             fi
         fi
+
     done
 
-    if [[ -z "$LATEST_ROBER_URL" ]]; then
-        echo "❌ Failed to find a valid Roberta .tar.xz release URL."
-        exit 1
-    fi
+    [[ -z "$LATEST_ROBER_URL" ]] && { echo "❌ Failed to find Roberta release"; exit 1; }
 
-    ROBER_TARGET_DIR="$INSTALL_BASE/Roberta-Latest"
-    download_and_install "$LATEST_ROBER_URL" "$ROBER_TARGET_DIR" "$LATEST_ROBER_VERSION"
+    download_and_install "$LATEST_ROBER_URL" "$INSTALL_BASE/Roberta-Latest" "$LATEST_ROBER_VERSION"
 }
 
 # ============================================================
@@ -356,5 +395,5 @@ manage_roberta() {
 # ============================================================
 
 rm -rf "$TEMP_DIR"
-echo "✅ All Steam Play versions are now up to date!"
 
+echo "✅ All Steam Play versions are now up to date!"
