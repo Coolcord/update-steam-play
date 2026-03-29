@@ -13,7 +13,7 @@ MANAGE_ROBERTA=true
 # Dependency checks
 # ============================================================
 
-REQUIRED_CMDS=(rsync curl jq tar)
+REQUIRED_CMDS=(rsync curl jq tar awk sed)
 
 for cmd in "${REQUIRED_CMDS[@]}"; do
     if ! command -v "$cmd" >/dev/null 2>&1; then
@@ -79,7 +79,7 @@ is_version_installed() {
 }
 
 # ============================================================
-# Install helper (rsync-safe)
+# Install helper
 # ============================================================
 
 download_and_install() {
@@ -124,6 +124,22 @@ download_and_install() {
 
     if [[ -f "$tmp/compatibilitytool.vdf" ]]; then
         sed -i -E 's/("display_name"[[:space:]]+")[^"]+"/\1'"$name"'"/' "$tmp/compatibilitytool.vdf"
+
+        if [[ "$name" == *-Latest ]]; then
+            awk -v name="$name" '
+            /"compat_tools"/ {
+                print
+                getline
+                print
+                getline
+                sub(/"[^"]*"/, "\"" name "\"")
+                print
+                next
+            }
+            { print }
+            ' "$tmp/compatibilitytool.vdf" > "$tmp/compatibilitytool.vdf.new" \
+              && mv "$tmp/compatibilitytool.vdf.new" "$tmp/compatibilitytool.vdf"
+        fi
     fi
 
     echo "$version" > "$tmp/version.txt"
