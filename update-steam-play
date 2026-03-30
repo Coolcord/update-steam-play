@@ -126,20 +126,33 @@ download_and_install() {
         sed -i -E 's/("display_name"[[:space:]]+")[^"]+"/\1'"$name"'"/' "$tmp/compatibilitytool.vdf"
 
         if [[ "$name" == *-Latest ]]; then
-            awk -v name="$name" '
-            /"compat_tools"/ {
-                print
-                getline
-                print
-                getline
-                sub(/"[^"]*"/, "\"" name "\"")
-                print
-                next
-            }
-            { print }
-            ' "$tmp/compatibilitytool.vdf" > "$tmp/compatibilitytool.vdf.new" \
-              && mv "$tmp/compatibilitytool.vdf.new" "$tmp/compatibilitytool.vdf"
+            internal_name="$name"
+        else
+            # Case: GE-Proton10-32 → GE-Proton10
+            if [[ "$name" =~ ^(.+?)([0-9]+)- ]]; then
+                internal_name="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
+            # Case: Proton-6.21-GE-2 → Proton-6
+            elif [[ "$name" =~ ^(.+?-)([0-9]+)\. ]]; then
+                internal_name="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
+            else
+                internal_name="$name"
+            fi
         fi
+
+        # Apply internal name rewrite
+        awk -v name="$internal_name" '
+        /"compat_tools"/ {
+            print
+            getline
+            print
+            getline
+            sub(/"[^"]*"/, "\"" name "\"")
+            print
+            next
+        }
+        { print }
+        ' "$tmp/compatibilitytool.vdf" > "$tmp/compatibilitytool.vdf.new" \
+          && mv "$tmp/compatibilitytool.vdf.new" "$tmp/compatibilitytool.vdf"
     fi
 
     echo "$version" > "$tmp/version.txt"
