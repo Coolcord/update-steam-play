@@ -88,16 +88,30 @@ download_and_install() {
     local target="$2"
     local version="$3"
 
+    local name
+    name=$(basename "$target")
+    local display_name="$name"
+
+    if [[ "$name" == *-Latest ]]; then
+        internal_name="$name"
+    else
+        if [[ "$name" =~ ^(.+?)([0-9]+)- ]]; then
+            internal_name="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
+        elif [[ "$name" =~ ^(.+?-)([0-9]+)\. ]]; then
+            internal_name="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
+        else
+            internal_name="$name"
+        fi
+
+        target="$(dirname "$target")/$internal_name"
+        name="$internal_name"
+    fi
+
     if is_version_installed "$target" "$version"; then
         local name
         name=$(basename "$target")
-
-        if [[ "$name" == *-Latest ]]; then
-            echo "✔ $name is already up to date (version $version)."
-        else
-            echo "✔ $name is already up to date."
-        fi
-
+        
+        echo "✔ $name is already up to date (version $version)."
         return
     fi
 
@@ -123,21 +137,7 @@ download_and_install() {
     name=$(basename "$target")
 
     if [[ -f "$tmp/compatibilitytool.vdf" ]]; then
-        sed -i -E 's/("display_name"[[:space:]]+")[^"]+"/\1'"$name"'"/' "$tmp/compatibilitytool.vdf"
-
-        if [[ "$name" == *-Latest ]]; then
-            internal_name="$name"
-        else
-            # Case: GE-Proton10-32 → GE-Proton10
-            if [[ "$name" =~ ^(.+?)([0-9]+)- ]]; then
-                internal_name="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
-            # Case: Proton-6.21-GE-2 → Proton-6
-            elif [[ "$name" =~ ^(.+?-)([0-9]+)\. ]]; then
-                internal_name="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
-            else
-                internal_name="$name"
-            fi
-        fi
+        sed -i -E 's/("display_name"[[:space:]]+")[^"]+"/\1'"$display_name"'"/' "$tmp/compatibilitytool.vdf"
 
         # Apply internal name rewrite
         awk -v name="$internal_name" '
