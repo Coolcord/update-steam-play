@@ -78,6 +78,20 @@ is_version_installed() {
     return 1
 }
 
+get_latest_tag() {
+    local repo="$1"
+    local pattern="$2"
+    local transform="$3"
+
+    git ls-remote --tags "$repo" 2>/dev/null \
+        | awk -F/ '{print $3}' \
+        | sed 's/\^{}//' \
+        | grep -E "$pattern" \
+        | sed -E "$transform" \
+        | sort -V \
+        | tail -n1
+}
+
 # ============================================================
 # Install helper
 # ============================================================
@@ -172,8 +186,74 @@ download_and_install() {
 # Proton-GE
 # ============================================================
 
+get_proton_ge_majors_git() {
+    git ls-remote --tags https://github.com/GloriousEggroll/proton-ge-custom.git 2>/dev/null \
+        | awk -F/ '{print $3}' \
+        | sed 's/\^{}//' \
+        | grep -E '^GE-Proton[0-9]+-[0-9]+$' \
+        | sed -E 's/^GE-Proton//' \
+        | awk -F- '$1 >= 10' \
+        | sort -V \
+        | awk -F- '
+        {
+            major=$1
+            latest[major]=$0
+        }
+        END {
+            for (m in latest) {
+                print m "|" latest[m]
+            }
+        }'
+}
+
 manage_proton_ge() {
 
+    local repo="https://github.com/GloriousEggroll/proton-ge-custom.git"
+    declare -A git_versions
+    local highest_major=0
+
+    while IFS="|" read -r major version; do
+        git_versions["$major"]="$version"
+
+        if (( major > highest_major )); then
+            highest_major="$major"
+        fi
+    done < <(get_proton_ge_majors_git)
+
+    # If git failed, fall back to API immediately
+    if [[ ${#git_versions[@]} -eq 0 ]]; then
+        echo "⚠ Failed to fetch git tags, falling back to API..."
+    else
+        local needs_update=false
+
+        for major in "${!git_versions[@]}"; do
+            version="${git_versions[$major]}"
+            if (( major == highest_major )); then
+                if ! is_version_installed "$INSTALL_BASE/GE-Proton-Latest" "$version"; then
+                    needs_update=true
+                fi
+            else
+                if ! is_version_installed "$INSTALL_BASE/GE-Proton$version" "$version"; then
+                    needs_update=true
+                fi
+            fi
+        done
+
+        if [[ "$needs_update" == false ]]; then
+            for major in $(printf "%s\n" "${!git_versions[@]}" | sort -rn); do
+                version="${git_versions[$major]}"
+                if (( major == highest_major )); then
+                    echo "✔ GE-Proton-Latest is already up to date (version $version)."
+                else
+                    echo "✔ GE-Proton$major is already up to date (version $version)."
+                fi
+            done
+
+            return
+        fi
+    fi
+
+    # Use GitHub API for the update
     local releases
     releases=$(curl -s "https://api.github.com/repos/GloriousEggroll/proton-ge-custom/releases?per_page=1000")
 
@@ -261,8 +341,76 @@ manage_proton_ge_legacy() {
 # Proton-EM
 # ============================================================
 
+get_proton_em_majors_git() {
+    git ls-remote --tags https://github.com/Etaash-mathamsetty/Proton.git 2>/dev/null \
+        | awk -F/ '{print $3}' \
+        | sed 's/\^{}//' \
+        | grep -E '^EM-[0-9]+\.[0-9]+-[0-9]+$' \
+        | sed -E 's/^EM-//' \
+        | sort -V \
+        | awk -F'[-]' '
+        {
+            split($1, v, ".")
+            major=v[1]"."v[2]
+            latest[major]=$0
+        }
+        END {
+            for (m in latest) {
+                print m "|" latest[m]
+            }
+        }'
+}
+
 manage_proton_em() {
 
+    declare -A git_versions
+    local latest_overall=""
+
+    while IFS="|" read -r major version; do
+        git_versions["$major"]="$version"
+
+        if [[ -z "$latest_overall" || "$(printf "%s\n%s\n" "$latest_overall" "$version" | sort -V | tail -n1)" == "$version" ]]; then
+            latest_overall="$version"
+        fi
+    done < <(get_proton_em_majors_git)
+
+    # Fallback if git fails
+    if [[ ${#git_versions[@]} -eq 0 ]]; then
+        echo "⚠ Failed to fetch git tags, falling back to API..."
+    else
+
+        local needs_update=false
+
+        for major in "${!git_versions[@]}"; do
+
+            version="${git_versions[$major]}"
+
+            if [[ "$version" == "$latest_overall" ]]; then
+                if ! is_version_installed "$INSTALL_BASE/EM-Proton-Latest" "$version"; then
+                    needs_update=true
+                fi
+            else
+                if ! is_version_installed "$INSTALL_BASE/EM-Proton$major" "$version"; then
+                    needs_update=true
+                fi
+            fi
+        done
+
+        if [[ "$needs_update" == false ]]; then
+            for major in $(printf "%s\n" "${!git_versions[@]}" | sort -Vr); do
+                version="${git_versions[$major]}"
+                if [[ "$version" == "$latest_overall" ]]; then
+                    echo "✔ EM-Proton-Latest is already up to date (version $version)."
+                else
+                    echo "✔ EM-Proton$major is already up to date (version $version)."
+                fi
+            done
+
+            return
+        fi
+    fi
+
+    # Use GitHub API for the update
     declare -A latest_by_major
 
     local latest_overall=""
@@ -320,6 +468,16 @@ manage_proton_em() {
 
 manage_luxtorpeda() {
 
+    local repo="https://github.com/luxtorpeda-dev/luxtorpeda.git"
+
+    latest_v=$(get_latest_tag "$repo" '^v[0-9]+\.[0-9]+\.[0-9]+$' 's/^/ /;s/^ //')
+
+    if [[ -n "$latest_v" ]] && is_version_installed "$INSTALL_BASE/Luxtorpeda-Latest" "$latest_v"; then
+        echo "✔ Luxtorpeda-Latest is already up to date (version $latest_v)."
+        return
+    fi
+
+    # Use GitHub API for the update
     LUX_DATA=$(curl -s "https://api.github.com/repos/luxtorpeda-dev/luxtorpeda/releases?per_page=100")
 
     mapfile -t LUX_URLS < <(echo "$LUX_DATA" | grep browser_download_url | grep '\.tar\.xz"' | cut -d '"' -f4)
@@ -339,7 +497,6 @@ manage_luxtorpeda() {
             latest_v="$v"
             latest_u="$u"
         fi
-
     done
 
     download_and_install "$latest_u" "$INSTALL_BASE/Luxtorpeda-Latest" "$latest_v"
@@ -351,6 +508,16 @@ manage_luxtorpeda() {
 
 manage_boxtron() {
 
+    local repo="https://github.com/dreamer/boxtron.git"
+
+    latest_v=$(get_latest_tag "$repo" '^v[0-9]+\.[0-9]+\.[0-9]+$' 's/^/ /;s/^ //')
+
+    if [[ -n "$latest_v" ]] && is_version_installed "$INSTALL_BASE/Boxtron-Latest" "$latest_v"; then
+        echo "✔ Boxtron-Latest is already up to date (version $latest_v)."
+        return
+    fi
+
+    # Use GitHub API for the update
     BOX_RELEASE_DATA=$(curl -s "https://api.github.com/repos/dreamer/boxtron/releases?per_page=100")
 
     BOX_TAR_URLS=($(echo "$BOX_RELEASE_DATA" | grep '"browser_download_url":' | grep 'boxtron.tar.xz' | cut -d '"' -f 4))
@@ -369,7 +536,6 @@ manage_boxtron() {
                 LATEST_BOX_URL="$url"
             fi
         fi
-
     done
 
     [[ -z "$LATEST_BOX_URL" ]] && { echo "❌ Failed to find Boxtron release"; exit 1; }
@@ -383,6 +549,16 @@ manage_boxtron() {
 
 manage_roberta() {
 
+    local repo="https://github.com/dreamer/roberta.git"
+
+    latest_v=$(get_latest_tag "$repo" '^v[0-9]+\.[0-9]+\.[0-9]+$' 's/^/ /;s/^ //')
+
+    if [[ -n "$latest_v" ]] && is_version_installed "$INSTALL_BASE/Roberta-Latest" "$latest_v"; then
+        echo "✔ Roberta-Latest is already up to date (version $latest_v)."
+        return
+    fi
+
+    # Use GitHub API for the update
     ROBER_RELEASE_DATA=$(curl -s "https://api.github.com/repos/dreamer/roberta/releases?per_page=100")
 
     ROBER_TAR_URLS=($(echo "$ROBER_RELEASE_DATA" | grep '"browser_download_url":' | grep 'roberta.tar.xz' | cut -d '"' -f 4))
@@ -401,7 +577,6 @@ manage_roberta() {
                 LATEST_ROBER_URL="$url"
             fi
         fi
-
     done
 
     [[ -z "$LATEST_ROBER_URL" ]] && { echo "❌ Failed to find Roberta release"; exit 1; }
