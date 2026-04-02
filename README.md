@@ -11,16 +11,17 @@ A quick and dirty bash script to manage and update Steam Play versions on Linux
 ## Sample Output
 ```
 Fetching all Steam Play release data from GitHub...
-✔  GE-Proton-Latest is already up to date (version 10-29).
-✔  GE-Proton9-27 is already up to date.
-✔  GE-Proton8-32 is already up to date.
-✔  GE-Proton7-55 is already up to date.
-✔  GE-Proton6-21 is already up to date.
-✔  GE-Proton5-9 is already up to date.
-✔  EM-Proton-Latest is already up to date (version 10.0-33).
-✔  Luxtorpeda-Latest is already up to date (version v74.3.1).
-✔  Boxtron-Latest is already up to date (version v0.5.4).
-✔  Roberta-Latest is already up to date (version v0.1.0).
+✔ GE-Proton-Latest is already up to date (version 10-34).
+✔ GE-Proton9 is already up to date (version 9-27).
+✔ GE-Proton8 is already up to date (version 8-32).
+✔ GE-Proton7 is already up to date (version 7-55).
+✔ GE-Proton6 is already up to date (version 6.21-GE-2).
+✔ GE-Proton5 is already up to date (version 5.9-GE-8-ST).
+✔ GE-Proton4 is already up to date (version 4.21-GE-2).
+✔ EM-Proton-Latest is already up to date (version 10.0-34).
+✔ Luxtorpeda-Latest is already up to date (version v76.2.0).
+✔ Boxtron-Latest is already up to date (version v0.5.4).
+✔ Roberta-Latest is already up to date (version v0.1.0).
 ✅ All Steam Play versions are now up to date!
 ```
 

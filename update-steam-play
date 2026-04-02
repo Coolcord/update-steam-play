@@ -244,6 +244,7 @@ manage_proton_ge_legacy() {
     V4_GE_LEGACY_LIST=(
         "6.21-GE-2|https://github.com/GloriousEggroll/proton-ge-custom/releases/download/6.21-GE-2/Proton-6.21-GE-2.tar.gz"
         "5.9-GE-8-ST|https://github.com/GloriousEggroll/proton-ge-custom/releases/download/5.9-GE-8-ST/Proton-5.9-GE-8-ST.tar.gz"
+	"4.21-GE-2|https://github.com/GloriousEggroll/proton-ge-custom/releases/download/4.21-GE-2/Proton-4.21-GE-2.tar.gz"
     )
 
     for item in "${V4_GE_LEGACY_LIST[@]}"; do
