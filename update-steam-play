@@ -124,8 +124,13 @@ download_and_install() {
     if is_version_installed "$target" "$version"; then
         local name
         name=$(basename "$target")
-        
-        echo "✔ $name is already up to date (version $version)."
+
+        local display_version="$version"
+        if [[ "$name" == *Proton* ]]; then
+            display_version="v$version"
+        fi
+
+        echo "✔ $name is already up to date (version $display_version)."
         return
     fi
 
@@ -243,9 +248,9 @@ manage_proton_ge() {
             for major in $(printf "%s\n" "${!git_versions[@]}" | sort -rn); do
                 version="${git_versions[$major]}"
                 if (( major == highest_major )); then
-                    echo "✔ GE-Proton-Latest is already up to date (version $version)."
+                    echo "✔ GE-Proton-Latest is already up to date (version v$version)."
                 else
-                    echo "✔ GE-Proton$major is already up to date (version $version)."
+                    echo "✔ GE-Proton$major is already up to date (version v$version)."
                 fi
             done
 
@@ -400,9 +405,9 @@ manage_proton_em() {
             for major in $(printf "%s\n" "${!git_versions[@]}" | sort -Vr); do
                 version="${git_versions[$major]}"
                 if [[ "$version" == "$latest_overall" ]]; then
-                    echo "✔ EM-Proton-Latest is already up to date (version $version)."
+                    echo "✔ EM-Proton-Latest is already up to date (version v$version)."
                 else
-                    echo "✔ EM-Proton$major is already up to date (version $version)."
+                    echo "✔ EM-Proton$major is already up to date (version v$version)."
                 fi
             done
 
