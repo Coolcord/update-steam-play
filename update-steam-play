@@ -194,7 +194,7 @@ get_proton_ge_majors_git() {
         | sed 's/\^{}//' \
         | grep -E '^GE-Proton[0-9]+-[0-9]+$' \
         | sed -E 's/^GE-Proton//' \
-        | awk -F- '$1 >= 10' \
+        | awk -F- '$1 >= 11' \
         | sort -V \
         | awk -F- '
         {
@@ -313,6 +313,7 @@ manage_proton_ge() {
 manage_proton_ge_legacy() {
 
     V7_GE_LEGACY_LIST=(
+        "10-34|https://github.com/GloriousEggroll/proton-ge-custom/releases/download/GE-Proton10-34/GE-Proton10-34.tar.gz"
         "9-27|https://github.com/GloriousEggroll/proton-ge-custom/releases/download/GE-Proton9-27/GE-Proton9-27.tar.gz"
         "8-32|https://github.com/GloriousEggroll/proton-ge-custom/releases/download/GE-Proton8-32/GE-Proton8-32.tar.gz"
         "7-55|https://github.com/GloriousEggroll/proton-ge-custom/releases/download/GE-Proton7-55/GE-Proton7-55.tar.gz"
