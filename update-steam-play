@@ -215,54 +215,119 @@ get_proton_ge_majors_git() {
 
 manage_proton_ge() {
 
+    local repo="https://github.com/GloriousEggroll/proton-ge-custom.git"
     local repo_api="https://api.github.com/repos/GloriousEggroll/proton-ge-custom/releases/tags"
 
     declare -A git_versions
     local highest_major=0
 
     while IFS="|" read -r major version; do
-
-        [[ -z "$major" || -z "$version" ]] && continue
-
         git_versions["$major"]="$version"
 
         if (( major > highest_major )); then
             highest_major="$major"
         fi
-
     done < <(get_proton_ge_majors_git)
 
+    # If git failed, fall back to API immediately
     if [[ ${#git_versions[@]} -eq 0 ]]; then
-        echo "❌ Failed to fetch Proton-GE git tags."
-        return 1
+        echo "⚠ Failed to fetch git tags, falling back to API..."
+
+        local releases
+        releases=$(curl -s "https://api.github.com/repos/GloriousEggroll/proton-ge-custom/releases?per_page=1000")
+
+        mapfile -t urls < <(
+            echo "$releases" |
+            jq -r '.[] | .assets[] | select(.name | endswith("-x86_64.tar.gz")) | .browser_download_url'
+        )
+
+        declare -A latest_by_major
+
+        local latest_version=""
+        local latest_url=""
+
+        for url in "${urls[@]}"; do
+
+            local file
+            file=$(basename "$url")
+
+            if [[ "$file" =~ ^GE-Proton([0-9]+)-([0-9]+)-x86_64\.tar\.gz$ ]]; then
+
+                local major="${BASH_REMATCH[1]}"
+                local minor="${BASH_REMATCH[2]}"
+                local version="$major-$minor"
+
+                if (( major < 11 )); then
+                    continue
+                fi
+
+                local current="${latest_by_major[$major]%%|*}"
+
+                if [[ -z "$current" || "$(printf "%s\n%s\n" "$current" "$version" | sort -V | tail -n1)" == "$version" ]]; then
+                    latest_by_major["$major"]="$version|$url"
+                fi
+
+                if [[ -z "$latest_version" || "$(printf "%s\n%s\n" "$latest_version" "$version" | sort -V | tail -n1)" == "$version" ]]; then
+                    latest_version="$version"
+                    latest_url="$url"
+                fi
+            fi
+        done
+
+        [[ -z "$latest_url" ]] && return
+
+        download_and_install "$latest_url" "$INSTALL_BASE/GE-Proton-Latest" "$latest_version"
+
+        for major in "${!latest_by_major[@]}"; do
+
+            entry="${latest_by_major[$major]}"
+            version="${entry%%|*}"
+            url="${entry##*|}"
+
+            [[ "$version" == "$latest_version" ]] && continue
+
+            download_and_install "$url" "$INSTALL_BASE/GE-Proton$version" "$version"
+        done
+
+        return
     fi
+
+    # Git successfully found the versions.
+    # Only query the GitHub API for releases that actually need updating.
 
     declare -A needs_update
 
     for major in "${!git_versions[@]}"; do
 
         local version="${git_versions[$major]}"
-        local target
 
         if (( major == highest_major )); then
-            target="$INSTALL_BASE/GE-Proton-Latest"
+            if ! is_version_installed "$INSTALL_BASE/GE-Proton-Latest" "$version"; then
+                needs_update["$major"]="$version|$INSTALL_BASE/GE-Proton-Latest"
+            fi
         else
-            target="$INSTALL_BASE/GE-Proton$major"
-        fi
-
-        if is_version_installed "$target" "$version"; then
-            echo "✔ $(basename "$target") is already up to date (version v$version)."
-        else
-            needs_update["$major"]="$version|$target"
+            if ! is_version_installed "$INSTALL_BASE/GE-Proton$version" "$version"; then
+                needs_update["$major"]="$version|$INSTALL_BASE/GE-Proton$version"
+            fi
         fi
     done
 
     # Everything is current — no GitHub API request.
     if [[ ${#needs_update[@]} -eq 0 ]]; then
+        for major in $(printf "%s\n" "${!git_versions[@]}" | sort -rn); do
+            local version="${git_versions[$major]}"
+
+            if (( major == highest_major )); then
+                echo "✔ GE-Proton-Latest is already up to date (version v$version)."
+            else
+                echo "✔ GE-Proton$major is already up to date (version v$version)."
+            fi
+        done
+
         return
     fi
 
-    # Only query GitHub when an update is actually required.
+    # Fetch the GitHub release API only for versions that need updating.
     for major in "${!needs_update[@]}"; do
 
         local entry="${needs_update[$major]}"
@@ -280,12 +345,15 @@ manage_proton_ge() {
 
         local url
         url=$(echo "$release_json" |
-            jq -r '.assets[] | .browser_download_url' |
-            grep -E '\.tar\.gz$' |
+            jq -r '
+                .assets[]
+                | select(.name | endswith("-x86_64.tar.gz"))
+                | .browser_download_url
+            ' |
             head -n1)
 
         if [[ -z "$url" || "$url" == "null" ]]; then
-            echo "❌ Could not find a tar.gz asset for GE-Proton$version."
+            echo "❌ Could not find x86_64 tar.gz asset for GE-Proton$version."
             return 1
         fi
 
