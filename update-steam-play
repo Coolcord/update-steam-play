@@ -277,7 +277,7 @@ manage_proton_ge() {
             local minor="${BASH_REMATCH[2]}"
             local version="$major-$minor"
 
-            if (( major < 10 )); then
+            if (( major < 11 )); then
                 continue
             fi
 
